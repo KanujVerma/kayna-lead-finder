@@ -1,0 +1,46 @@
+name: Playwright Enrichment Worker
+
+on:
+  workflow_dispatch:
+    inputs:
+      batch_size:
+        description: Number of leads to enrich
+        required: false
+        default: "10"
+  schedule:
+    # 2 AM PT (10 AM UTC) Mon–Fri — off-peak, outside 9:30–16:30 send window
+    - cron: "0 10 * * 1-5"
+
+jobs:
+  enrich:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - run: npm ci
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: playwright-chromium-${{ runner.os }}-
+
+      - name: Install Playwright Chromium
+        run: npx playwright install chromium --with-deps
+
+      - name: Run enrichment worker
+        # Script created in Phase 10
+        run: node scripts/playwright-worker.js
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GHA_WORKER_SECRET: ${{ secrets.GHA_WORKER_SECRET }}
+          BATCH_SIZE: ${{ github.event.inputs.batch_size || '10' }}

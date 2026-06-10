@@ -47,3 +47,12 @@ next-env.d.ts
 .claude/
 .superpowers/
 .claude-flow/
+
+# OpenNext / Cloudflare build artifacts
+.open-next/
+.wrangler/
+
+# Cloudflare dev secrets (template .dev.vars.example is committed)
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
