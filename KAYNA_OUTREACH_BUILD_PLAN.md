@@ -9,9 +9,9 @@
 
 | Item | Status |
 |------|--------|
-| Current phase | Phase 3 (Settings page — awaiting approval) |
-| Completed phases | Phase 0 ✅ · Phase 1 ✅ · Phase 2A ✅ |
-| Next phase | Phase 3 — Settings page |
+| Current phase | Phase 4 (Cheerio enrichment — awaiting approval) |
+| Completed phases | Phase 0 ✅ · Phase 1 ✅ · Phase 2A ✅ · Phase 3 ✅ |
+| Next phase | Phase 4 — Cheerio enrichment |
 | Host decision | ✅ Cloudflare Pages/Workers + OpenNext (build verified) |
 | Real cold outreach | 🔒 LOCKED — physical address + unsubscribe not yet configured |
 | Auto-mode | 🔒 LOCKED — Phase 15 |
@@ -281,6 +281,48 @@ Strict lifecycle. 5 terminal states (no exit): `meeting_requested`, `not_interes
 
 ### Recommended next step
 Phase 3 — Settings page: a `/settings` route that reads the singleton `settings` row and lets you set `physical_address`, flip `unsubscribe_configured`, and view the current `sending_paused` / `auto_mode` / daily-cap values. This is the prerequisite for the CAN-SPAM send gate.
+
+---
+
+## Phase 3 Report — ✅ COMPLETE
+
+**Completed:** 2026-06-10
+
+### Files created
+- `lib/settings-policy.ts` — pure module: `sanitizeSettingsUpdate`, `validateSettingsUpdate`, `computeReadiness`, `EDITABLE_FIELDS`, `LOCKED_FIELDS` semantics. No Supabase import — fully testable without DB.
+- `__tests__/lib/settings-policy.test.ts` — 45 pure unit tests (sanitize strip/force, validate all field types, computeReadiness all cases). No live DB dependency.
+- `app/api/settings/route.ts` — `GET` reads singleton; `PATCH` sanitizes → validates → force-locks `auto_mode=false` + `firecrawl_enabled=false` at write layer. Always targets `id=1`, never inserts.
+- `components/settings/StatusCard.tsx` — presentational readiness card (ok/warn/locked/disabled states + dot + color).
+- `components/settings/SettingsForm.tsx` — `'use client'`: status cards row, editable field sections, locked/disabled section, Save → `PATCH /api/settings` with optimistic update + saved/error feedback.
+- `app/(app)/settings/page.tsx` — server component, `dynamic='force-dynamic'`, reads singleton via `getSupabaseServer()`, passes to `SettingsForm`.
+
+### Files edited
+- `components/Sidebar.tsx` — added `{ href: '/settings', label: 'Settings' }` to `nav` array.
+- `KAYNA_OUTREACH_BUILD_PLAN.md` — this report.
+
+### Behavior added
+- `/settings` route with header (eyebrow / Cormorant h1 / italic subtitle) matching existing pages.
+- **Status cards:** CAN-SPAM (ready only when address + unsubscribe both set), Physical Address, Unsubscribe, Sending, Auto-mode (locked), Firecrawl (disabled). Cards update after successful save.
+- **Editable fields:** `physical_address`, `unsubscribe_configured`, `sending_paused`, `daily_cap`, `business_hours_start`, `business_hours_end`, `allowed_cities` (comma-separated), `allowed_categories` (comma-separated, optional).
+- **Locked fields (UI + API):** `auto_mode` shown as disabled toggle with "Locked — Phase 15" badge; `firecrawl_enabled` shown as disabled toggle with "Disabled" badge. Cannot be enabled from UI or API.
+- **Validation:** physical_address trim/null/max-500; daily_cap 0–50 integer; HH:MM format + start<end; array fields normalize (trim, dedupe, drop empty).
+- **Auth:** inherited from `middleware.ts` — `/settings` + `/api/settings` are login-gated with no extra code.
+- **No send button.** No Gmail, no Firecrawl, no Cheerio, no Phase 4 code anywhere.
+
+### Checks run
+| Check | Result |
+|-------|--------|
+| `npx tsc --noEmit` | ✅ Clean — no errors |
+| `npx jest --testPathPatterns="settings-policy"` | ✅ 45/45 pass |
+| `npm test` (full suite) | ✅ 89/89 pass — 5 suites, 0 regressions |
+| `npm run build` | ✅ Clean — `/settings` (ƒ dynamic) + `/api/settings` (ƒ dynamic) in route table |
+| `.env.local` tracked? | ✅ No — confirmed gitignored |
+
+### Blockers
+None. DB is already live (Phase 2A migration applied and verified). Settings singleton seeded.
+
+### Recommended next step
+Phase 4 — Cheerio enrichment: HTTP + Cheerio scrape of `website` URL per lead, extract emails/phone/contact links, write to `lead_evidence`. Triggered manually per-lead, no auto-mode. Default scraping tier.
 
 ---
 

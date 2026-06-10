@@ -7,6 +7,7 @@ const nav = [
   { href: '/pipeline', label: 'Pipeline' },
   { href: '/stats',    label: 'Stats' },
   { href: '/trash',    label: 'Trash' },
+  { href: '/settings', label: 'Settings' },
 ]
 
 export default function Sidebar() {
