@@ -16,6 +16,18 @@
 | Real cold outreach | 🔒 LOCKED — physical address + unsubscribe not yet configured |
 | Auto-mode | 🔒 LOCKED — Phase 15 |
 
+### Remote Database (initialized 2026-06-10)
+
+- **Project:** Kayna Lead Finder · ref `qvoxnqlcrmwuvjlkzmcw` · `https://qvoxnqlcrmwuvjlkzmcw.supabase.co`
+- `001_create_leads.sql` — ✅ applied successfully
+- `002_outreach_foundation.sql` — ✅ applied successfully
+- **Verification passed:**
+  - 8 public tables exist: `leads` + 7 Phase 2A tables (`lead_evidence`, `lead_resolved`, `outreach_messages`, `suppression`, `audit_log`, `gmail_account`, `settings`)
+  - `leads` has the 7 Phase 2A columns (`outreach_state`, `mockup_ready`, `best_email`, `email_confidence`, `resolved_at`, `quality_score`, `do_not_contact`)
+  - `settings` has exactly one fail-closed row (`auto_mode=false`, `sending_paused=true`, `unsubscribe_configured=false`, `firecrawl_enabled=false`, `physical_address=null`)
+  - both constraints exist: `leads_stage_check` and `leads_outreach_state_check`
+- **Remote database is ready for Phase 3.**
+
 ---
 
 ## Repo Findings (as of Phase 0)
