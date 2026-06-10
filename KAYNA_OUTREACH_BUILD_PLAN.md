@@ -38,13 +38,14 @@
 - **One-time step:** `wrangler login` before first live deploy
 
 ### Email System
-- **Send:** Gmail API (`gmail.send` scope, Production consent, AES-GCM token encryption)
-- **Read replies/bounces:** Google Apps Script (best-effort, idempotent webhook, no CASA requirement)
-- **Account:** team.kayna Gmail (not personal), unverified-in-Production acceptable for V1 single internal sender
+- **Send:** Gmail API (`gmail.send` scope, Production consent, AES-GCM token encryption) from `team.kayna@gmail.com`
+- **Read replies/bounces:** Google Apps Script under `team.kayna@gmail.com` (best-effort, idempotent webhook, no CASA requirement)
+- **Account:** `team.kayna@gmail.com` (not personal), unverified-in-Production acceptable for V1 single internal sender
 
 ### Background Jobs
-- **Engine:** Inngest (free tier: 50k exec/mo, 5 concurrent steps)
-- **Browser worker:** GitHub Actions + Playwright (2k min/mo free; ~3–5 min/run = ~20–30 enrichments/month)
+- **Engine:** Inngest (durable jobs + delays; free-tier limits are assumptions — see Service Reference)
+- **Fallback:** QStash (inactive; documented fallback if Inngest becomes a problem)
+- **Browser worker:** GitHub Actions + Playwright (qualified/uncertain leads; free-tier limits are assumptions — see Service Reference)
 
 ### Scraping (tiered, free-first)
 - **Tier 1:** HTTP + Cheerio (every lead, default)
@@ -63,8 +64,9 @@
 
 ### CRM Model
 - Keep existing `stage` column (human Kanban) unchanged.
-- Add orthogonal `outreach_state` (automation lifecycle — 21 states).
+- Add orthogonal `outreach_state` (automation lifecycle — 22 states).
 - Do not merge or replace the current Kanban.
+- **Orthogonality rule:** `stage` = human sales / Kanban pipeline (`new`, `called`, `follow_up`, `meeting`, `proposal`, `won`, `lost`). `outreach_state` = automation / email lifecycle. Sales outcomes never live in `outreach_state`.
 
 ### Outreach Safety
 - **Default:** manual approval mode (`auto_mode = false`)
@@ -94,91 +96,118 @@
 
 **Extend `leads`:**
 ```sql
-outreach_state       text    -- automation lifecycle state (see enum below)
-mockup_ready         boolean -- true = safe to claim mockup exists
+outreach_state       text default 'new'    -- text + CHECK (22 values), consistent with existing `stage`
+mockup_ready         boolean default false -- DB field for later/manual usage only; NOT used by safe_default_v1
 best_email           text    -- resolver's chosen email
 email_confidence     text    -- confidence tier from resolver
 resolved_at          timestamptz
 quality_score        integer -- 0–100
 do_not_contact       boolean default false
 ```
+`outreach_state` uses a **`text` column + `CHECK`** constraint (the 22 values), matching the existing
+`stage` pattern — cheaper to evolve than a native enum.
 
 **New tables:**
 - `lead_evidence` — source-level proof records (never raw HTML); blob_ref to Storage
 - `lead_resolved` — cached resolver output per lead
 - `outreach_messages` — sent/scheduled email records
-- `suppression` — deduped by email + domain; opt-out/bounce/complaint records
+- `suppression` — unique on email + domain index; opt-out/bounce/complaint records (send-gate source of truth)
 - `audit_log` — immutable event log
 - `gmail_account` — OAuth tokens (AES-GCM encrypted), send settings
-- `settings` — singleton row; `physical_address`, `unsubscribe_configured`, `auto_mode`, `warmup_start_date`, daily caps
+- `settings` — fail-closed singleton; `physical_address = null`, `unsubscribe_configured = false`, `auto_mode = false`, `warmup_start_date`, daily caps, business-hours window, allowed cities/categories
+
+**Phase 2A deliverables (code — built in the implementation pass, not now):**
+- Migration: `supabase/migrations/002_outreach_foundation.sql` (reuse existing `update_updated_at_column()` trigger)
+- **State transition helpers** — typed `transitionOutreachState(...)` with allowed-transition validation + `audit_log` write (uses `getSupabaseServer()` from `lib/supabase.ts`)
+- **Jest tests** — legal/illegal transition coverage (`jest.config.ts` + `__tests__/` already configured)
+- **Types** — extend `types/index.ts` (add `OutreachState` union + new-table interfaces); do not create a parallel type file
 
 **Phase 2B (deferred):**
 - `scrape_jobs` — enrichment job queue
-- Advanced evidence/quality tables
+- Playwright job tracking
+- Firecrawl usage/cap enforcement
+- Advanced follow-up / auto-mode-specific columns
 
-### Outreach States (21)
-`new` → `enriching` → `enriched` → `qualified` → `approved_to_send` → `scheduled` → `sent_initial` → `awaiting_response` → `followup_1_scheduled` → `followup_1_sent` → `followup_2_scheduled` → `followup_2_sent` → `positive_reply` → `meeting_requested` → `meeting_booked` → `converted` → `unsubscribed` → `bounced` → `suppressed` → `do_not_contact` → `error`
+### Outreach States (22)
+`new` → `enriching` → `enriched` → `qualified` → `needs_review` → `approved_to_send` → `scheduled` → `sent_initial` → `awaiting_response` → `followup_1_scheduled` → `followup_1_sent` → `followup_2_scheduled` → `followup_2_sent` → `positive_reply` → `meeting_requested` → `manual_outreach` → `manual_contacted` → `not_interested` → `unsubscribed` → `bounced` → `do_not_contact` → `error`
+
+**States intentionally NOT in `outreach_state`** (avoid duplicating the Kanban `stage` / suppression table):
+- `meeting_booked` → use Kanban `stage = meeting`
+- `converted` → use Kanban `stage = won`
+- `suppressed` → enforced by the `suppression` table + send gate, not a duplicate lead state
 
 ---
 
 ## Email Template: `safe_default_v1`
 
+**Rules:**
+- Do not use contractions.
+- Do not mention a mockup in the default template.
+- Do not include any `mockup_ready` conditional in the default template.
+- Keep `mockup_ready` as a DB field for later / manual usage only.
+- Do not claim a full website, mockup, demo, or design is completed unless a future manual mode explicitly allows it.
+- Allowed phrase: "preliminary website direction."
+- Sender identity: Krish / Kayna Team / 408-476-6233. Never "KaynaBot" in customer-facing outreach.
+- Template variables stay simple and deterministic. No Claude per-send writing.
+
 ```
-Subject: Quick thought on {{business_name}}'s website
+Subject: Quick website idea for {{business_name}}
 
-Hi {{first_name_or_team}},
+Hi {{business_name}} team,
 
-I came across {{business_name}} while looking at {{category}} businesses in {{city}}.
-I had some preliminary website direction ideas that I think could help — happy to share
-them if that's useful.
+I came across your business while looking at local {{category}} companies in {{city}}.
 
-{{#if mockup_ready}}
-I've actually already put together a quick mockup — no commitment, just wanted to show
-what I was thinking.
-{{/if}}
+We made a quick preliminary website direction for you, focused on making the site cleaner and easier for customers to call, book, or request a quote.
 
-Would you be open to a quick chat?
+Would you be open to a quick 10-minute call this week? I can walk you through it and see if it would be useful.
 
 Best,
 Krish
-Kayna Team · 408-476-6233
+Kayna Team
+408-476-6233
 
----
-{{physical_address}}
-To unsubscribe: {{unsubscribe_url}}
+{{physical_address}} · Unsubscribe: {{unsubscribe_url}}
 ```
 
 ---
 
 ## Service Free-Tier Reference
 
-| Service | Free Limit | Hard Pause? | Notes |
-|---------|-----------|-------------|-------|
-| Cloudflare Workers | 100k req/day | No | 10ms CPU/invocation; heavy work → Inngest/GHA |
-| Netlify | 300 credits/mo | Yes | Hard-pause confirmed; fallback only |
-| Supabase | 500MB DB, 1GB Storage | Idle pause (7d) | Compact evidence; prune old blobs |
-| Inngest | 50k exec/mo, 5 concurrent | No | Free tier verified |
-| GitHub Actions | 2k min/mo (private) | No | ~3–5 min/Playwright run = ~20–30/mo |
-| Firecrawl | 1k credits/mo | No | Optional; cap at 800 |
-| Gmail API | No hard limit | Rate-limited | Warmup ramp required |
-| Apps Script | 6 min/execution | No | Best-effort reads only |
+> Provider limits below are **assumptions** unless verified from official docs/dashboards. Do not hard-code
+> quota assumptions into product code — put limits in config/settings and verify per-provider at integration
+> time. Any limit that cannot be confirmed from official docs/dashboard stays marked **Unverified**.
+
+| Service | Free Limit (assumption) | Hard Pause? | Verified? | Notes |
+|---------|------------------------|-------------|-----------|-------|
+| Cloudflare Workers | ~100k req/day | No | Unverified — confirm in dashboard | 10ms CPU/invocation; heavy work → Inngest/GHA |
+| Netlify | ~300 credits/mo | Yes | Unverified — confirm in dashboard | Fallback only |
+| Supabase | ~500MB DB, 1GB Storage | Idle pause (~7d) | Unverified — confirm in dashboard | Compact evidence; prune old blobs |
+| Inngest | ~50k exec/mo, 5 concurrent | No | Unverified — confirm in dashboard | Durable jobs/delays |
+| QStash | free tier (fallback) | No | Unverified — confirm in dashboard | Inactive; fallback for Inngest |
+| GitHub Actions | ~2k min/mo (private) | No | Unverified — confirm in dashboard | ~3–5 min/Playwright run |
+| Firecrawl | ~1k credits/mo | No | Unverified — confirm in dashboard | Optional; disabled by default |
+| Gmail API | No hard limit | Rate-limited | Unverified — confirm in docs | Warmup ramp required |
+| Apps Script | ~6 min/execution | No | Unverified — confirm in docs | Best-effort reads only |
 
 ---
 
 ## Phase Roadmap
+
+> Phases 0–9 match the approved first-safe-loop order. Phases 10–16 are deferred/later work. Tracking
+> clarity matters more than the original numbering.
 
 | Phase | Name | Status |
 |-------|------|--------|
 | 0 | Plan file (this document) | ✅ COMPLETE |
 | 1 | Feasibility spikes | ✅ COMPLETE — see report below |
 | 2A | Minimum DB foundation | ⏳ Next |
-| 2B | Advanced DB tables | 🔒 Deferred |
+| 2B | Advanced DB tables (deferred) | 🔒 |
 | 3 | Settings page | 🔒 |
 | 4 | Cheerio enrichment | 🔒 |
 | 5 | Deterministic resolver + Context Pack | 🔒 |
-| 6 | Gmail OAuth + send | 🔒 |
+| 6 | Gmail OAuth + manual-approval send | 🔒 |
 | 7 | Unsubscribe + suppression | 🔒 |
-| 8 | Apps Script reply reader | 🔒 |
+| 8 | Apps Script reply / bounce / opt-out reader | 🔒 |
 | 9 | Slack webhook alerts | 🔒 |
 | 10 | Playwright GHA worker | 🔒 |
 | 11 | Follow-up cadence | 🔒 |
@@ -187,6 +216,13 @@ To unsubscribe: {{unsubscribe_url}}
 | 14 | Firecrawl fallback (optional) | 🔒 |
 | 15 | Auto-mode | 🔒 |
 | 16 | Production hardening | 🔒 |
+
+### First Safe Loop (Phases 4→8)
+- Phase 4: Cheerio enrichment
+- Phase 5: Resolver + Context Pack
+- Phase 6: Gmail OAuth + manual-approval send
+- Phase 7: Unsubscribe + suppression
+- Phase 8: Apps Script reply / bounce / opt-out reader
 
 ---
 
@@ -252,10 +288,31 @@ None blocking Phase 2A.
 
 ## Non-Negotiable Constraints
 
-1. No password sharing across services
-2. No raw scraper dumps (HTML, screenshots, markdown) to Claude
-3. No guessed emails sent automatically
-4. No real cold outreach until `physical_address` + `unsubscribe_configured` are set and tested
-5. `physical_address` is always a Settings field — never hardcoded
-6. Production sends blocked until both gates flip
-7. Test sends only to controlled addresses (never scraped leads)
+1. No password sharing.
+2. No browser automation for Gmail.
+3. No Claude Gmail connector in production.
+4. No Vercel Hobby commercial-use gray area.
+5. No raw scraper dumps to Claude.
+6. No sending to guessed emails.
+7. No sending to suppressed leads.
+8. No sending to unsubscribed leads.
+9. No sending to bounced leads.
+10. No full-auto until manual mode is proven safe.
+11. No real cold email until unsubscribe link is configured and tested.
+12. No real cold email until physical address is configured.
+13. Keep recurring cost $0/near-$0.
+14. Keep Claude token usage minimal.
+
+---
+
+## Cost Rule
+
+- V1 must run at **$0/month** outside Claude usage.
+- No paid plan, paid add-on, or overage billing without explicit user approval.
+- No paid Firecrawl usage.
+- No paid Cloudflare usage.
+- No paid Supabase usage.
+- No paid Inngest usage.
+- No paid GitHub Actions overage.
+- If a provider requires billing/payment setup, **stop and ask**.
+- Add guards/caps so the system fails closed or pauses before creating paid usage.
