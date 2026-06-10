@@ -9,9 +9,9 @@
 
 | Item | Status |
 |------|--------|
-| Current phase | Phase 2A (awaiting approval to begin) |
-| Completed phases | Phase 0 ✅ · Phase 1 ✅ |
-| Next phase | Phase 2A — Minimum DB foundation |
+| Current phase | Phase 3 (Settings page — awaiting approval) |
+| Completed phases | Phase 0 ✅ · Phase 1 ✅ · Phase 2A ✅ |
+| Next phase | Phase 3 — Settings page |
 | Host decision | ✅ Cloudflare Pages/Workers + OpenNext (build verified) |
 | Real cold outreach | 🔒 LOCKED — physical address + unsubscribe not yet configured |
 | Auto-mode | 🔒 LOCKED — Phase 15 |
@@ -200,9 +200,9 @@ Kayna Team
 |-------|------|--------|
 | 0 | Plan file (this document) | ✅ COMPLETE |
 | 1 | Feasibility spikes | ✅ COMPLETE — see report below |
-| 2A | Minimum DB foundation | ⏳ Next |
+| 2A | Minimum DB foundation | ✅ COMPLETE — see report below |
 | 2B | Advanced DB tables (deferred) | 🔒 |
-| 3 | Settings page | 🔒 |
+| 3 | Settings page | ⏳ Next |
 | 4 | Cheerio enrichment | 🔒 |
 | 5 | Deterministic resolver + Context Pack | 🔒 |
 | 6 | Gmail OAuth + manual-approval send | 🔒 |
@@ -223,6 +223,52 @@ Kayna Team
 - Phase 6: Gmail OAuth + manual-approval send
 - Phase 7: Unsubscribe + suppression
 - Phase 8: Apps Script reply / bounce / opt-out reader
+
+---
+
+## Phase 2A Report — ✅ COMPLETE
+
+**Completed:** 2026-06-10
+
+### Files touched
+- `supabase/migrations/002_outreach_foundation.sql` — **new** — extends `leads` with 7 outreach columns + CHECK constraint (22-value `outreach_state`); creates 7 new tables; seeds fail-closed `settings` singleton
+- `types/index.ts` — **extended** — added `OutreachState` union (22 values); extended `Lead` with new outreach fields; added 7 table interfaces (`LeadEvidence`, `LeadResolved`, `OutreachMessage`, `Suppression`, `AuditLog`, `GmailAccount`, `Settings`)
+- `lib/outreach-state.ts` — **new** — pure layer (`OUTREACH_STATES`, `ALLOWED_TRANSITIONS`, `TERMINAL_STATES`, `isLegalTransition`, `isTerminalState`, `buildTransitionAudit`) + thin DB layer (`transitionOutreachState()`)
+- `__tests__/lib/outreach-state.test.ts` — **new** — 37 pure unit tests (state count, terminal states, legal/illegal transitions, audit payload shape)
+- `KAYNA_OUTREACH_BUILD_PLAN.md` — **updated** — this report
+
+### Migration summary (`002_outreach_foundation.sql`)
+- `leads` extended: `outreach_state text default 'new'` (text + CHECK, 22 values), `mockup_ready boolean default false`, `best_email`, `email_confidence`, `resolved_at`, `quality_score`, `do_not_contact boolean default false`
+- 7 tables created: `lead_evidence`, `lead_resolved` (unique per lead), `outreach_messages`, `suppression` (unique on email+domain, nulls not distinct), `audit_log`, `gmail_account` (unique per email), `settings` (singleton, id = 1)
+- `settings` seeded fail-closed: `auto_mode=false`, `sending_paused=true`, `physical_address=null`, `unsubscribe_configured=false`, `firecrawl_enabled=false`
+- Reuses existing `update_updated_at_column()` trigger on 4 tables
+- Indexes added: `leads_outreach_state_idx`, `lead_evidence_lead_id_idx`, `outreach_messages_lead_id_idx`, `outreach_messages_gmail_thread_id_idx`, `outreach_messages_gmail_message_id_idx`, `suppression_email_idx`, `suppression_domain_idx`, `audit_log_lead_id_created_at_idx`
+
+### Transition graph
+Strict lifecycle. 5 terminal states (no exit): `meeting_requested`, `not_interested`, `unsubscribed`, `bounced`, `do_not_contact`. `error` recovers via `needs_review` or `do_not_contact`. Out-of-order jumps rejected; fails closed.
+
+### Checks run
+| Check | Result |
+|-------|--------|
+| `npx tsc --noEmit` | ✅ Clean — no errors |
+| `npm test` (full suite) | ✅ 44/44 pass — 4 suites (37 new + 7 existing) |
+| `npm run build` | ✅ Clean — all 14 routes compile |
+| `git status` | Modified (uncommitted — pending review) |
+
+### Not built (Phase 2B / later)
+- `scrape_jobs` table — Phase 2B
+- Playwright job-tracking tables — Phase 2B
+- Firecrawl cap enforcement — Phase 2B
+- Advanced follow-up / auto-mode columns — Phase 2B
+- Settings UI — Phase 3
+- Gmail OAuth — Phase 6
+- Cheerio enrichment, resolver, Slack, Apps Script, Playwright worker, Firecrawl, follow-ups, auto-mode — later phases
+
+### Blockers
+- Migration is a **local file only** — must be applied to the remote Supabase project (`supabase db push` or dashboard SQL editor) before any code that queries the new tables/columns runs. One-time step; no blocker for Phase 3 UI scaffolding.
+
+### Recommended next step
+Phase 3 — Settings page: a `/settings` route that reads the singleton `settings` row and lets you set `physical_address`, flip `unsubscribe_configured`, and view the current `sending_paused` / `auto_mode` / daily-cap values. This is the prerequisite for the CAN-SPAM send gate.
 
 ---
 
