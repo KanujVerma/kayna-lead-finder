@@ -4,6 +4,7 @@ import { useDraggable } from '@dnd-kit/core'
 import type { Lead, Stage } from '@/types'
 
 type EnrichState = 'idle' | 'loading' | 'done' | 'error'
+type ResolveState = 'idle' | 'loading' | 'done' | 'error'
 
 const STAGE_ORDER: Stage[] = ['new', 'called', 'follow_up', 'meeting', 'proposal', 'won', 'lost']
 const NEXT_STAGE_LABEL: Record<Stage, string> = {
@@ -40,11 +41,38 @@ export default function LeadCard({ lead, onStageChange, onNotesChange }: Props) 
   const [notes, setNotes] = useState(lead.notes ?? '')
   const [enrichState, setEnrichState] = useState<EnrichState>('idle')
   const [enrichMsg, setEnrichMsg] = useState<string>('')
+  const [resolveState, setResolveState] = useState<ResolveState>('idle')
+  const [resolveMsg, setResolveMsg] = useState<string>('')
 
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: lead.id,
     data: { stage: lead.stage },
   })
+
+  async function handleResolve() {
+    setResolveState('loading')
+    setResolveMsg('')
+    try {
+      const res = await fetch(`/api/leads/${lead.id}/resolve`, { method: 'POST' })
+      const json = await res.json()
+      if (!res.ok) {
+        setResolveState('error')
+        setResolveMsg(json?.error ?? 'Resolve failed')
+      } else if (json?.status === 'skipped') {
+        setResolveState('done')
+        setResolveMsg(json?.note ?? 'Skipped')
+      } else {
+        const outcome: string = json?.outcome ?? '—'
+        const score: number = json?.quality_score ?? 0
+        const email: string = json?.best_email ?? 'no email'
+        setResolveState('done')
+        setResolveMsg(`Resolved · ${outcome} · score ${score} · ${email}`)
+      }
+    } catch {
+      setResolveState('error')
+      setResolveMsg('Network error')
+    }
+  }
 
   async function handleEnrich() {
     setEnrichState('loading')
@@ -143,26 +171,47 @@ export default function LeadCard({ lead, onStageChange, onNotesChange }: Props) 
         />
       )}
 
-      {/* Enrich website — only shown when a website URL exists */}
+      {/* Enrich website + Resolve lead — only shown when a website URL exists */}
       {lead.website && (
         <div className="mt-1">
-          <button
-            onPointerDown={e => e.stopPropagation()}
-            onClick={e => { e.stopPropagation(); void handleEnrich() }}
-            disabled={enrichState === 'loading'}
-            className="text-xs transition-colors"
-            style={{ color: enrichState === 'error' ? '#f87171' : 'var(--color-muted)', cursor: enrichState === 'loading' ? 'default' : 'pointer' }}
-            onMouseEnter={e => { if (enrichState !== 'loading') e.currentTarget.style.color = 'var(--color-accent)' }}
-            onMouseLeave={e => { if (enrichState !== 'error') e.currentTarget.style.color = 'var(--color-muted)' }}
-          >
-            {enrichState === 'loading' ? 'Enriching…' : 'Enrich website'}
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              onPointerDown={e => e.stopPropagation()}
+              onClick={e => { e.stopPropagation(); void handleEnrich() }}
+              disabled={enrichState === 'loading'}
+              className="text-xs transition-colors"
+              style={{ color: enrichState === 'error' ? '#f87171' : 'var(--color-muted)', cursor: enrichState === 'loading' ? 'default' : 'pointer' }}
+              onMouseEnter={e => { if (enrichState !== 'loading') e.currentTarget.style.color = 'var(--color-accent)' }}
+              onMouseLeave={e => { if (enrichState !== 'error') e.currentTarget.style.color = 'var(--color-muted)' }}
+            >
+              {enrichState === 'loading' ? 'Enriching…' : 'Enrich website'}
+            </button>
+            <button
+              onPointerDown={e => e.stopPropagation()}
+              onClick={e => { e.stopPropagation(); void handleResolve() }}
+              disabled={resolveState === 'loading'}
+              className="text-xs transition-colors"
+              style={{ color: resolveState === 'error' ? '#f87171' : 'var(--color-muted)', cursor: resolveState === 'loading' ? 'default' : 'pointer' }}
+              onMouseEnter={e => { if (resolveState !== 'loading') e.currentTarget.style.color = 'var(--color-accent)' }}
+              onMouseLeave={e => { if (resolveState !== 'error') e.currentTarget.style.color = 'var(--color-muted)' }}
+            >
+              {resolveState === 'loading' ? 'Resolving…' : 'Resolve lead'}
+            </button>
+          </div>
           {enrichMsg && (
             <div
               className="text-xs mt-0.5"
               style={{ color: enrichState === 'error' ? '#f87171' : '#4ade80' }}
             >
               {enrichMsg}
+            </div>
+          )}
+          {resolveMsg && (
+            <div
+              className="text-xs mt-0.5"
+              style={{ color: resolveState === 'error' ? '#f87171' : '#4ade80' }}
+            >
+              {resolveMsg}
             </div>
           )}
         </div>

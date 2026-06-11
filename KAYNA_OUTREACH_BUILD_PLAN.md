@@ -9,9 +9,9 @@
 
 | Item | Status |
 |------|--------|
-| Current phase | Phase 5 — Deterministic resolver + Context Pack |
-| Completed phases | Phase 0 ✅ · Phase 1 ✅ · Phase 2A ✅ · Phase 3 ✅ · Phase 4 ✅ |
-| Next phase | Phase 5 — Deterministic resolver + Context Pack |
+| Current phase | Phase 6 — Gmail OAuth + manual-approval send |
+| Completed phases | Phase 0 ✅ · Phase 1 ✅ · Phase 2A ✅ · Phase 3 ✅ · Phase 4 ✅ · Phase 5 ✅ |
+| Next phase | Phase 6 — Gmail OAuth + manual-approval send |
 | Host decision | ✅ Cloudflare Pages/Workers + OpenNext (build verified) |
 | Real cold outreach | 🔒 LOCKED — physical address + unsubscribe not yet configured |
 | Auto-mode | 🔒 LOCKED — Phase 15 |
@@ -216,7 +216,7 @@ Kayna Team
 | 2B | Advanced DB tables (deferred) | 🔒 |
 | 3 | Settings page | ✅ COMPLETE |
 | 4 | Cheerio enrichment | ✅ COMPLETE |
-| 5 | Deterministic resolver + Context Pack | 🔒 |
+| 5 | Deterministic resolver + Context Pack | ✅ COMPLETE |
 | 6 | Gmail OAuth + manual-approval send | 🔒 |
 | 7 | Unsubscribe + suppression | 🔒 |
 | 8 | Apps Script reply / bounce / opt-out reader | 🔒 |
@@ -323,6 +323,81 @@ None. DB is already live (Phase 2A migration applied and verified). Settings sin
 
 ### Recommended next step
 Phase 4 — Cheerio enrichment: HTTP + Cheerio scrape of `website` URL per lead, extract emails/phone/contact links, write to `lead_evidence`. Triggered manually per-lead, no auto-mode. Default scraping tier.
+
+---
+
+## Phase 5 Report — ✅ COMPLETE
+
+**Completed:** 2026-06-11
+
+### Files created
+- `lib/resolver/resolver-policy.ts` — **new** — pure, no network, no DB. Exports: `normalizeEmail`, `isValidEmail`, `isBadEmail`, `isNoReply`, `isRoleEmail`, `registrableDomain`, `domainMatches`, `classifyEmailCandidates`, `pickBestEmail`, `computeQualityScore`, `buildContextPack`, `planResolutionTransitions`, `buildResolvedLead`. Also exports types: `EmailConfidence`, `EmailCandidate`, `PickedEmail`, `ContextPack`, `ResolvedLead`.
+- `lib/resolver/resolve-lead.ts` — **new** — server runner (DB). `resolveLeadById(leadId)`: reads lead + evidence, builds resolved lead (pure), upserts `lead_resolved`, updates `leads` mirror fields, walks `outreach_state` conservatively, returns compact summary.
+- `app/api/leads/[id]/resolve/route.ts` — **new** — `POST /api/leads/[id]/resolve`. Next.js 16 async params. Returns compact summary only. Login-gated by middleware.
+- `__tests__/lib/resolver-policy.test.ts` — **new** — 90 pure unit tests across 10 describe blocks. Covers: email normalize/validate; bad-email filtering (example/test/asset/malformed); tier classification; deduplication; domain matching; `official_mailto` beats `official_visible`; domain-matched beats off-domain; non-noreply beats noreply; role beats non-role; alphabetical tiebreak; no guessed emails ever generated/selected; quality score computation + thresholds; context pack structure, char budget, no HTML, determinism; `planResolutionTransitions` conservative behavior (forward walk, empty+mismatch for non-forward states, terminal no-ops); `buildResolvedLead` end-to-end integration.
+
+### Files edited
+- `components/pipeline/LeadCard.tsx` — added `ResolveState` type, `resolveState`/`resolveMsg` state, `handleResolve()` async function (POST → loading/done/error, shows outcome + score + email), "Resolve lead" button beside "Enrich website". Drag-safe, no stage change, no auto-trigger.
+- `KAYNA_OUTREACH_BUILD_PLAN.md` — this report.
+
+### Confidence ladder
+| Tier | evidence_type | Meaning |
+|------|---|---|
+| `official_mailto` (1) | `email_mailto` | href="mailto:…" on lead's own site |
+| `official_visible` (2) | `email_visible` | visible in body text on lead's own site |
+| `public_thirdparty` (3) | reserved | future (Firecrawl, Places) |
+| `markup_only` (4) | reserved | future |
+| `guessed` (5) | — | V1: classification only, never selected |
+| `none` (6) | — | no usable email found |
+
+### Context Pack shape
+Stored in `lead_resolved.context_pack` (jsonb). Compact — ~300–400 tokens. Fields: `business_name`, `website`, `best_email`, `email_confidence`, `quality_score`, `email_summary` {mailto_count, visible_count, candidates[≤5]}, `phone_summary` {tel_count, visible_count, sample[≤3]}, `links_summary` {contact[≤5], booking[≤5], about[≤3], social[≤6]}, `page` {title, description}, `signals` {hasContactForm, hasMailto, hasTel, socialCount}, `warnings[]`, `recommended_action`, `approx_tokens`. No raw HTML, no large arrays, no secrets.
+
+### Quality score formula (0–100, deterministic)
+`+45` official_mailto / `+35` official_visible / `+25` public_thirdparty / `+15` markup_only → `+15` domain-match → `+10` has phone → `+12` has contact|booking link → `+4` has about → `+8` has title → `+6` has social → `−10` noreply-selected. Clamped to [0, 100].
+
+### DB writes
+- `lead_resolved` — upserted one row per lead (onConflict `lead_id`)
+- `leads` mirror fields — `best_email`, `email_confidence`, `resolved_at`, `quality_score`
+- `audit_log` — written by `transitionOutreachState()` (non-fatal)
+- **Never written:** `outreach_messages`, `suppression`, `leads.stage`
+
+### Conservative outreach_state behavior
+Transitions attempted **only** from `{new, enriching, enriched}`:
+- No evidence → skip (no writes, no transitions)
+- Terminal lead → skip (no writes, no transitions)
+- From `new`/`enriching`/`enriched` → walk forward: `new→enriching→enriched→{qualified|needs_review}`
+  - `qualified` only when `best_email` present AND `quality_score >= 50`
+  - Otherwise `needs_review`
+- Already `needs_review`/`qualified`/`approved_to_send`+ → refresh data only, `stateMismatch` note, **no transitions**
+- Every hop via `transitionOutreachState()` only; illegal/failed hops non-fatal to data writes
+
+### Checks run
+| Check | Result |
+|-------|--------|
+| `npx tsc --noEmit` | ✅ Clean — no errors |
+| `npx jest --testPathPatterns="resolver-policy"` | ✅ 90/90 pass |
+| `npm test` (full suite) | ✅ 243/243 pass — 7 suites, 0 regressions |
+| `npm run build` | ✅ Clean — `/api/leads/[id]/resolve` (ƒ dynamic) in route table |
+| `.env.local` tracked? | ✅ No — confirmed gitignored |
+
+### Safety guardrails confirmed
+- ✅ No Claude/LLM calls anywhere
+- ✅ No raw HTML stored or returned (context pack is compact, derived, capped)
+- ✅ No Gmail / sending / unsubscribe / outreach_messages / suppression writes
+- ✅ No Firecrawl, no Playwright
+- ✅ No `leads.stage` change
+- ✅ `outreach_state` changed only via `transitionOutreachState()`; illegal hops fail closed
+- ✅ Terminal leads left untouched (no writes, no transitions)
+- ✅ Already-advanced states (needs_review+) get data refresh only — no forced transitions
+- ✅ `.env.local` not tracked by git
+- ✅ Cost $0
+
+### Blockers
+None. DB tables `lead_resolved` and `lead_evidence` were created in Phase 2A and are already live.
+
+### Recommended next step
+Phase 6 — Gmail OAuth + manual-approval send: connect `team.kayna@gmail.com` via Gmail API OAuth (`gmail.send` scope), build the send gate (cap, business hours, suppression check, physical_address + unsubscribe_configured), expose a manual "Send" button that only fires when a lead is `approved_to_send`. Phase 5's `qualified` state is the prerequisite — humans approve leads for send in Phase 6.
 
 ---
 
