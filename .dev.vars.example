@@ -13,3 +13,21 @@ NEXT_PUBLIC_SUPABASE_URL=https://qvoxnqlcrmwuvjlkzmcw.supabase.co
 
 # Supabase Dashboard → Project Settings → API → Secret key (server-only, never commit):
 # SUPABASE_SERVICE_ROLE_KEY=
+
+# ---------------------------------------------------------------------------
+# Phase 6A — Gmail OAuth (server-only; never prefix these NEXT_PUBLIC_)
+# ---------------------------------------------------------------------------
+
+# Base URL for OAuth redirect URI derivation (wrangler dev will differ from next dev)
+# APP_BASE_URL=http://localhost:3000
+
+# Google Cloud Console → Credentials → OAuth 2.0 Client IDs → Web application
+# GOOGLE_CLIENT_ID=
+# GOOGLE_CLIENT_SECRET=
+
+# AES-256-GCM key — 32 bytes, base64. Generate: openssl rand -base64 32
+# NEVER commit the real value.
+# GMAIL_TOKEN_ENC_KEY=
+
+# Expected sender account
+# GMAIL_SENDER_EMAIL=team.kayna@gmail.com

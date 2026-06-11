@@ -1,6 +1,8 @@
 import { getSupabaseServer } from '@/lib/supabase'
 import type { Settings } from '@/types'
 import SettingsForm from '@/components/settings/SettingsForm'
+import GmailConnectionCard from '@/components/settings/GmailConnectionCard'
+import { getGmailAccountStatus } from '@/lib/gmail/account'
 
 export const dynamic = 'force-dynamic'
 
@@ -18,8 +20,21 @@ async function getSettings(): Promise<Settings | null> {
   return data as Settings
 }
 
-export default async function SettingsPage() {
-  const settings = await getSettings()
+export default async function SettingsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ gmail?: string; reason?: string }>
+}) {
+  const [settings, gmailStatus, params] = await Promise.all([
+    getSettings(),
+    getGmailAccountStatus(),
+    searchParams,
+  ])
+
+  const gmailBanner = (params.gmail === 'connected' || params.gmail === 'error')
+    ? (params.gmail as 'connected' | 'error')
+    : undefined
+  const gmailReason = params.reason
 
   return (
     <div>
@@ -53,6 +68,12 @@ export default async function SettingsPage() {
       }}>
         safety, compliance, and sending controls
       </p>
+
+      <GmailConnectionCard
+        initialStatus={gmailStatus}
+        banner={gmailBanner}
+        bannerReason={gmailReason}
+      />
 
       {settings ? (
         <SettingsForm initialSettings={settings} />

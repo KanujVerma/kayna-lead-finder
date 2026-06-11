@@ -9,9 +9,9 @@
 
 | Item | Status |
 |------|--------|
-| Current phase | Phase 6 — Gmail OAuth + manual-approval send |
-| Completed phases | Phase 0 ✅ · Phase 1 ✅ · Phase 2A ✅ · Phase 3 ✅ · Phase 4 ✅ · Phase 5 ✅ |
-| Next phase | Phase 6 — Gmail OAuth + manual-approval send |
+| Current phase | Phase 6B — Manual-approval send gate |
+| Completed phases | Phase 0 ✅ · Phase 1 ✅ · Phase 2A ✅ · Phase 3 ✅ · Phase 4 ✅ · Phase 5 ✅ · Phase 6A ✅ |
+| Next phase | Phase 6B — Manual-approval send gate + gmail.send scope |
 | Host decision | ✅ Cloudflare Pages/Workers + OpenNext (build verified) |
 | Real cold outreach | 🔒 LOCKED — physical address + unsubscribe not yet configured |
 | Auto-mode | 🔒 LOCKED — Phase 15 |
@@ -217,7 +217,8 @@ Kayna Team
 | 3 | Settings page | ✅ COMPLETE |
 | 4 | Cheerio enrichment | ✅ COMPLETE |
 | 5 | Deterministic resolver + Context Pack | ✅ COMPLETE |
-| 6 | Gmail OAuth + manual-approval send | 🔒 |
+| 6A | Gmail OAuth connection (connect / status / token storage) | ✅ COMPLETE |
+| 6B | Manual-approval send gate + gmail.send scope | 🔒 |
 | 7 | Unsubscribe + suppression | 🔒 |
 | 8 | Apps Script reply / bounce / opt-out reader | 🔒 |
 | 9 | Slack webhook alerts | 🔒 |
@@ -559,3 +560,94 @@ None blocking Phase 2A.
 - No paid GitHub Actions overage.
 - If a provider requires billing/payment setup, **stop and ask**.
 - Add guards/caps so the system fails closed or pauses before creating paid usage.
+
+---
+
+## Phase 6A Report — ✅ COMPLETE
+
+**Completed:** 2026-06-11
+
+### Scope
+Gmail OAuth connection flow + AES-256-GCM token storage + settings UI. **No sending.** No `gmail.send`
+scope. No send button. No `outreach_messages` writes. No `outreach_state` transitions.
+
+### Decisions
+- **Scopes:** `openid email` only (least-privilege). Token cannot send mail.
+- **Crypto:** Web Crypto `crypto.subtle` AES-256-GCM — works in Cloudflare Workers and Node 20.
+- **Connected email:** decoded from `id_token` JWT payload — no extra API call.
+- **CSRF:** httpOnly `gmail_oauth_state` cookie set on start, verified + cleared on callback.
+- **Account guard:** callback hard-rejects any account ≠ `GMAIL_SENDER_EMAIL`.
+- **No `googleapis` added** — plain `fetch` only; Workers-compatible.
+- **Env validation lazy** — `tsc`/`build` pass without real credentials.
+- **Schema:** `gmail_account` table already existed from Phase 2A — **no migration needed**.
+  `connected_at` not a column; status uses `created_at` instead (documented, not a blocker).
+
+### Files created
+- `lib/gmail/config.ts` — lazy `getOAuthConfig()`, `buildRedirectUri()`, `OAUTH_SCOPES`, `scopeString()`.
+- `lib/gmail/token-crypto.ts` — `encryptToken` / `decryptToken` (AES-256-GCM via Web Crypto).
+- `lib/gmail/oauth.ts` — `buildAuthUrl` (pure), `exchangeCodeForTokens`, `parseIdTokenEmail` (pure), `revokeToken` (best-effort).
+- `lib/gmail/account.ts` — `getGmailAccountStatus`, `connectGmailAccount`, `disconnectGmailAccount` (server DB layer).
+- `app/api/gmail/oauth/start/route.ts` — GET: gen state cookie + redirect to Google.
+- `app/api/gmail/oauth/callback/route.ts` — GET: verify state → exchange code → guard email → encrypt → upsert → redirect.
+- `app/api/gmail/status/route.ts` — GET: returns safe status (no token columns).
+- `app/api/gmail/disconnect/route.ts` — POST: best-effort revoke + clear DB tokens.
+- `components/settings/GmailConnectionCard.tsx` — `'use client'`: status, account, scopes, expiry, Connect link, Disconnect button, banner. **No Send button.**
+- `__tests__/lib/gmail-token-crypto.test.ts` — 10 pure tests (round-trip, IV uniqueness, tamper, fail-closed).
+- `__tests__/lib/gmail-oauth.test.ts` — 18 pure tests (buildAuthUrl params, parseIdTokenEmail, getOAuthConfig fail-closed).
+
+### Files edited
+- `app/(app)/settings/page.tsx` — added `GmailConnectionCard` above `SettingsForm`; reads `searchParams` server-side for banner.
+- `.env.local.example` — added 5 Phase 6A vars as placeholders (no real values).
+- `.dev.vars.example` — same, commented.
+- `KAYNA_OUTREACH_BUILD_PLAN.md` — this report.
+
+### Redirect URI to register in Google Cloud (dev)
+```
+http://localhost:3000/api/gmail/oauth/callback
+```
+Production: `https://<cloudflare-workers-domain>/api/gmail/oauth/callback` — add when deploying.
+
+### Env vars required before live OAuth test
+| Var | Source |
+|---|---|
+| `GOOGLE_CLIENT_ID` | GCP Console → Credentials → OAuth client ID |
+| `GOOGLE_CLIENT_SECRET` | GCP Console → Credentials → OAuth client ID |
+| `APP_BASE_URL` | `http://localhost:3000` (dev) |
+| `GMAIL_TOKEN_ENC_KEY` | `openssl rand -base64 32` (run locally, never commit) |
+| `GMAIL_SENDER_EMAIL` | `team.kayna@gmail.com` |
+
+**Gmail API does NOT need enabling for 6A** — `openid email` are identity scopes.
+
+### Checks run
+| Check | Result |
+|---|---|
+| `npx tsc --noEmit` | ✅ Clean — no errors |
+| `npm test` (full suite) | ✅ 275/275 pass — 9 suites, 0 regressions (28 new) |
+| `npm run build` | ✅ Clean — 4 new `/api/gmail/*` routes (ƒ dynamic) in route table |
+| `.env.local` / `.dev.vars` tracked? | ✅ No — gitignored, confirmed clean |
+
+### Safety guardrails confirmed
+- ✅ No email send, no `gmail.send` scope, no Gmail send API call
+- ✅ No `outreach_messages` / `suppression` / `settings` writes; no `outreach_state` / `stage` transitions
+- ✅ Tokens AES-256-GCM encrypted at rest; never logged, never returned to client
+- ✅ Encryption key from env only; absent/wrong-length → fail closed (throws)
+- ✅ Callback hard-rejects any account ≠ `team.kayna@gmail.com`
+- ✅ No secrets committed; only `.example` files updated (placeholders)
+- ✅ No `googleapis` dependency; no paid services; cost $0
+- ✅ Lazy env validation → `tsc`/`build` succeed without real credentials
+
+### Blockers
+None for the code. One manual prerequisite before live OAuth round-trip:
+
+**You must complete Google Cloud Console setup:**
+1. console.cloud.google.com → create/select project ("Kayna Outreach").
+2. OAuth consent screen → External → add **`openid`** and **`.../auth/userinfo.email`** scopes only. Publish to production (non-sensitive scopes, no review needed, no 7-day expiry).
+3. Credentials → Create OAuth client ID → Web application → add redirect URI above → copy Client ID + Secret.
+4. Generate encryption key: `openssl rand -base64 32`
+5. Add all 5 vars to `.env.local` (never commit).
+
+### Recommended next step
+Phase 6B — Manual-approval send gate: add `gmail.send` scope via explicit re-consent, build the send gate
+(cap, business hours, suppression check, `physical_address` + `unsubscribe_configured` both true), expose
+a manual Send button only for leads in `approved_to_send` state. Requires unsubscribe URL + physical address
+configured in Settings first.
