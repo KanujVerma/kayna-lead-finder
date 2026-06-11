@@ -9,9 +9,9 @@
 
 | Item | Status |
 |------|--------|
-| Current phase | Phase 4 (Cheerio enrichment — awaiting approval) |
-| Completed phases | Phase 0 ✅ · Phase 1 ✅ · Phase 2A ✅ · Phase 3 ✅ |
-| Next phase | Phase 4 — Cheerio enrichment |
+| Current phase | Phase 5 — Deterministic resolver + Context Pack |
+| Completed phases | Phase 0 ✅ · Phase 1 ✅ · Phase 2A ✅ · Phase 3 ✅ · Phase 4 ✅ |
+| Next phase | Phase 5 — Deterministic resolver + Context Pack |
 | Host decision | ✅ Cloudflare Pages/Workers + OpenNext (build verified) |
 | Real cold outreach | 🔒 LOCKED — physical address + unsubscribe not yet configured |
 | Auto-mode | 🔒 LOCKED — Phase 15 |
@@ -214,8 +214,8 @@ Kayna Team
 | 1 | Feasibility spikes | ✅ COMPLETE — see report below |
 | 2A | Minimum DB foundation | ✅ COMPLETE — see report below |
 | 2B | Advanced DB tables (deferred) | 🔒 |
-| 3 | Settings page | ⏳ Next |
-| 4 | Cheerio enrichment | 🔒 |
+| 3 | Settings page | ✅ COMPLETE |
+| 4 | Cheerio enrichment | ✅ COMPLETE |
 | 5 | Deterministic resolver + Context Pack | 🔒 |
 | 6 | Gmail OAuth + manual-approval send | 🔒 |
 | 7 | Unsubscribe + suppression | 🔒 |
@@ -323,6 +323,74 @@ None. DB is already live (Phase 2A migration applied and verified). Settings sin
 
 ### Recommended next step
 Phase 4 — Cheerio enrichment: HTTP + Cheerio scrape of `website` URL per lead, extract emails/phone/contact links, write to `lead_evidence`. Triggered manually per-lead, no auto-mode. Default scraping tier.
+
+---
+
+## Phase 4 Report — ✅ COMPLETE
+
+**Completed:** 2026-06-11
+
+### Files created
+- `lib/enrichment/cheerio-extractor.ts` — **new** — pure extraction module (no network, no DB). Functions: `normalizeUrl`, `extractEmails`, `extractPhones`, `extractLinks`, `extractPageSummary`, `extractWebsiteSignals`, `extractEvidence` (orchestrator), `buildLeadEvidenceRows`. Raw HTML is consumed inside `extractEvidence` and never returned or stored. Every row: `source='website'`, `blob_ref=null`, `confidence=null`.
+- `lib/enrichment/enrich-lead.ts` — **new** — server-side runner. `enrichLeadById(leadId)`: loads lead, validates website URL (http/https only), fetches with 9s timeout + polite User-Agent, caps body at 1.5 MB, guards content-type (text/html only), calls extractor, deletes prior `source='website'` evidence rows, inserts fresh rows. Returns compact summary only — never raw HTML. No stage change. No outreach_state change.
+- `app/api/leads/[id]/enrich/route.ts` — **new** — `POST /api/leads/[id]/enrich`. Login-gated by existing `middleware.ts`. Uses Next.js 16 async params (`await params`). Returns JSON summary (200/404/500). No raw HTML in response.
+- `__tests__/lib/cheerio-extractor.test.ts` — **new** — 64 pure unit tests across 8 describe blocks. Covers: `normalizeUrl` (12 cases); `extractEmails` (8 cases inc. dedup, cap, lowercase); `extractPhones` (5 cases); `extractLinks` (12 cases inc. contact/about/booking/social/calendly/dedup/cap); `extractPageSummary` (5 cases inc. og fallback); `extractWebsiteSignals` (5 cases); `extractEvidence` smoke (3 cases); `buildLeadEvidenceRows` invariants (13 cases — verifies `source='website'`, `blob_ref=null`, `confidence=null`, no HTML in values/detail on every row).
+
+### Files edited
+- `components/pipeline/LeadCard.tsx` — added `EnrichState` type, `enrichState`/`enrichMsg` local state, `handleEnrich()` async function (POST → loading/done/error), and an "Enrich website" button rendered only when `lead.website` is truthy. Uses existing `onPointerDown stopPropagation` drag-safe pattern. Shows "Enriched · N rows" on success, error message in red on failure.
+- `package.json` — added `cheerio` (^1.2.0) as runtime dependency.
+- `package-lock.json` — updated.
+- `KAYNA_OUTREACH_BUILD_PLAN.md` — this report.
+
+### Dependency added
+`cheerio@1.2.0` — MIT, pure Node.js HTML parser. No paid services, no credentials, no network calls in the package itself.
+
+### Evidence shape written to `lead_evidence`
+| evidence_type | value | detail |
+|---|---|---|
+| `email_mailto` | email address | null |
+| `email_visible` | email address | null |
+| `phone_tel` | normalized digits | null |
+| `phone_visible` | normalized digits | null |
+| `link_contact` | absolute URL | `{text?}` |
+| `link_about` | absolute URL | `{text?}` |
+| `link_booking` | absolute URL | `{platform?, text?}` |
+| `link_social` | absolute URL | `{platform, text?}` |
+| `page_summary` | page title | `{description, fetched_url}` |
+| `website_signal` | null | `{hasContactForm, hasMailto, hasTel, socialCount, requested_url, final_url, status_code}` |
+
+**Invariants on every row:** `source='website'`, `blob_ref=null`, `confidence=null`.
+
+### Outreach state behavior
+- `outreach_state`: **unchanged**. Phase 4 writes evidence only.
+- `transitionOutreachState()`: **not called**. `enriching`/`enriched` transitions wired in Phase 5 (resolver).
+- Re-run: prior `source='website'` rows deleted, fresh rows inserted. Other sources untouched.
+
+### Checks run
+| Check | Result |
+|-------|--------|
+| `npx tsc --noEmit` | ✅ Clean — no errors |
+| `npx jest --testPathPatterns="cheerio-extractor"` | ✅ 64/64 pass |
+| `npm test` (full suite) | ✅ 153/153 pass — 6 suites, 0 regressions |
+| `npm run build` | ✅ Clean — `/api/leads/[id]/enrich` (ƒ dynamic) in route table |
+| `.env.local` tracked? | ✅ No — confirmed gitignored |
+
+### Safety guardrails confirmed
+- ✅ No raw HTML stored (`blob_ref=null` on every row; confirmed by unit tests)
+- ✅ No raw HTML returned to client (summary counts only)
+- ✅ No Claude calls
+- ✅ No Firecrawl
+- ✅ No Playwright
+- ✅ No Gmail / sending / unsubscribe
+- ✅ No `stage` change
+- ✅ No `outreach_state` change (only comments in the code assert the invariant)
+- ✅ `.env.local` not tracked by git
+
+### Blockers
+None. DB tables `lead_evidence` was created in Phase 2A and is already live on the remote Supabase project.
+
+### Recommended next step
+Phase 5 — Deterministic resolver + Context Pack: read `lead_evidence` rows for a lead, apply the confidence ladder (`official_mailto` → `official_visible` → `public_thirdparty` → `markup_only` → `guessed` → `none`), pick `best_email`, write to `lead_resolved`, build the deterministic ~300–400 token Context Pack. Wire `outreach_state` transitions `new→enriching→enriched` here. No Claude calls in happy path.
 
 ---
 

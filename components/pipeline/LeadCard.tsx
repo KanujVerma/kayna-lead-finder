@@ -3,6 +3,8 @@ import { useState } from 'react'
 import { useDraggable } from '@dnd-kit/core'
 import type { Lead, Stage } from '@/types'
 
+type EnrichState = 'idle' | 'loading' | 'done' | 'error'
+
 const STAGE_ORDER: Stage[] = ['new', 'called', 'follow_up', 'meeting', 'proposal', 'won', 'lost']
 const NEXT_STAGE_LABEL: Record<Stage, string> = {
   new: 'Called', called: 'Follow Up', follow_up: 'Meeting Set',
@@ -36,11 +38,33 @@ interface Props {
 export default function LeadCard({ lead, onStageChange, onNotesChange }: Props) {
   const [showNotes, setShowNotes] = useState(false)
   const [notes, setNotes] = useState(lead.notes ?? '')
+  const [enrichState, setEnrichState] = useState<EnrichState>('idle')
+  const [enrichMsg, setEnrichMsg] = useState<string>('')
 
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: lead.id,
     data: { stage: lead.stage },
   })
+
+  async function handleEnrich() {
+    setEnrichState('loading')
+    setEnrichMsg('')
+    try {
+      const res = await fetch(`/api/leads/${lead.id}/enrich`, { method: 'POST' })
+      const json = await res.json()
+      if (!res.ok) {
+        setEnrichState('error')
+        setEnrichMsg(json?.error ?? 'Enrichment failed')
+      } else {
+        const n: number = json?.inserted ?? 0
+        setEnrichState('done')
+        setEnrichMsg(`Enriched · ${n} row${n !== 1 ? 's' : ''}`)
+      }
+    } catch {
+      setEnrichState('error')
+      setEnrichMsg('Network error')
+    }
+  }
 
   const stageIdx = STAGE_ORDER.indexOf(lead.stage as Stage)
   const nextStage = stageIdx < STAGE_ORDER.length - 1 ? STAGE_ORDER[stageIdx + 1] : null
@@ -117,6 +141,31 @@ export default function LeadCard({ lead, onStageChange, onNotesChange }: Props) 
             padding: 8,
           }}
         />
+      )}
+
+      {/* Enrich website — only shown when a website URL exists */}
+      {lead.website && (
+        <div className="mt-1">
+          <button
+            onPointerDown={e => e.stopPropagation()}
+            onClick={e => { e.stopPropagation(); void handleEnrich() }}
+            disabled={enrichState === 'loading'}
+            className="text-xs transition-colors"
+            style={{ color: enrichState === 'error' ? '#f87171' : 'var(--color-muted)', cursor: enrichState === 'loading' ? 'default' : 'pointer' }}
+            onMouseEnter={e => { if (enrichState !== 'loading') e.currentTarget.style.color = 'var(--color-accent)' }}
+            onMouseLeave={e => { if (enrichState !== 'error') e.currentTarget.style.color = 'var(--color-muted)' }}
+          >
+            {enrichState === 'loading' ? 'Enriching…' : 'Enrich website'}
+          </button>
+          {enrichMsg && (
+            <div
+              className="text-xs mt-0.5"
+              style={{ color: enrichState === 'error' ? '#f87171' : '#4ade80' }}
+            >
+              {enrichMsg}
+            </div>
+          )}
+        </div>
       )}
     </div>
   )
